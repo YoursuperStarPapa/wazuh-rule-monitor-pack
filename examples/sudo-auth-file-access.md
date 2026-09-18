@@ -31,87 +31,163 @@
 - Navigate: **Wazuh Dashboard → OpenSearch Plugins → Alerting → Monitors → Create monitor**
 - **Monitor name:** `Linux Sensitive Auth File Access via Sudo`
 - **Index:** `wazuh-alerts-*`
-- **Schedule:** Every 1 minute (or per your SOC cadence)
+- **Schedule:** Every 1 minute
 
 ### ③ Extraction Query (Query DSL Editor)
 
-Select **Extraction query editor** (not visual editor) and paste:
+Select **Extraction query editor** and paste:
 
 ```json
 {
+  "size": 1000,
   "query": {
     "bool": {
-      "must": [
+      "filter": [
         {
-          "term": {
-            "rule.id": "100001"
+          "range": {
+            "@timestamp": {
+              "from": "{{period_end}}||-1m",
+              "to": "{{period_end}}",
+              "include_lower": true,
+              "include_upper": true,
+              "boost": 1
+            }
           }
         },
         {
-          "regexp": {
+          "range": {
+            "rule.id": {
+              "from": 100001,
+              "to": 100001,
+              "include_lower": true,
+              "include_upper": true,
+              "boost": 1
+            }
+          }
+        },
+        {
+          "term": {
             "process.name": "sudo"
           }
         },
         {
           "regexp": {
-            "dissect.content": "COMMAND=.*(/etc/shadow|/etc/passwd|/etc/gshadow)"
+            "dissect.content": {
+              "value": "COMMAND=.*(/etc/shadow|/etc/passwd|/etc/gshadow)",
+              "flags": "ALL",
+              "case_insensitive": false,
+              "max_determinized_states": 10000,
+              "boost": 1
+            }
           }
         }
-      ]
+      ],
+      "adjust_pure_negative": true,
+      "boost": 1
+    }
+  },
+  "track_total_hits": 2147483647,
+  "aggregations": {
+    "by_user": {
+      "terms": {
+        "field": "data.user.name",
+        "missing": "unknown",
+        "size": 20,
+        "min_doc_count": 1,
+        "shard_min_doc_count": 0,
+        "show_term_doc_count_error": false,
+        "order": [
+          { "_count": "desc" },
+          { "_key": "asc" }
+        ]
+      },
+      "aggregations": {
+        "sample_alerts": {
+          "top_hits": {
+            "from": 0,
+            "size": 5,
+            "version": false,
+            "seq_no_primary_term": false,
+            "explain": false,
+            "_source": {
+              "includes": [
+                "@timestamp",
+                "agent.name",
+                "data.user.name",
+                "data.process.name",
+                "data.dissect.content",
+                "rule.id",
+                "rule.level",
+                "rule.description"
+              ],
+              "excludes": []
+            },
+            "sort": [
+              {
+                "@timestamp": {
+                  "order": "desc"
+                }
+              }
+            ]
+          }
+        }
+      }
     }
   }
 }
 ```
 
-**Field mapping reference:**
-| XML Rule Field | Query DSL Clause | Rationale |
+**Parameter breakdown:**
+| Parameter | Value | Purpose |
 |---|---|---|
-| `<field name="process.name" type="pcre2">^sudo$</field>` | `{"regexp":{"process.name":"sudo"}}` | Positive match |
-| `<field name="dissect.content" type="pcre2">COMMAND=.*shadow...</field>` | `{"regexp":{"dissect.content":"COMMAND=.*(/etc/shadow\|/etc/passwd\|/etc/gshadow)"}}` | OR via regex alternation |
-| (no negate in this rule) | If negate: move to `must_not` array | Negate fields go in `must_not` |
+| `size` | 1000 | Max raw hits returned |
+| `filter[0].range.@timestamp` | `{{period_end}}||-1m` to `{{period_end}}` | 1-minute lookback window |
+| `filter[1].range.rule.id` | `from: 100001, to: 100001` | Scope to this rule only |
+| `filter[2].term.process.name` | `sudo` | Match process field |
+| `filter[3].regexp.dissect.content` | `COMMAND=.*shadow...` | OR match via regex |
+| `track_total_hits` | 2147483647 | Accurate total count |
+| `aggregations.by_user` | `data.user.name` | Group alerts by user |
+| `top_hits._source.includes` | 8 fields | Return only relevant fields |
+| `top_hits.sort` | `@timestamp desc` | Latest alerts first |
 
 ### ④ Trigger Condition
-- **Condition type:** Per monitor
+- **Condition type:** Per bucket (aggregation monitor)
 - **Threshold expression:**
 ```
-ctx.results[0].hits.total.value > 0
+ctx.results[0].aggregations.by_user.buckets.size() > 0
 ```
-- **Action name:** `Sensitive auth file access detected`
 
 ### ⑤ Action Configuration
 
 **Email action template:**
 ```
-Subject: [Wazuh Alert] Sensitive Auth File Access via Sudo - Rule 100001
+Subject: [Wazuh] Sensitive Auth File Access via Sudo - Rule 100001
 
 Body:
-Monitor {{ctx.monitor.name}} triggered.
+Monitor {{ctx.monitor.name}} triggered at {{ctx.periodEnd}}.
 
-Alert: {{ctx.trigger.name}}
-Severity: Level 12 (High)
-Time: {{ctx.periodStart}}
-
-Matching alerts:
-{{#ctx.results[0].hits.hits}}
-- Agent: {{_source.agent.name}} | User: {{_source.data.user.name}} | Command: {{_source.data.dissect.content}}
-{{/ctx.results[0].hits.hits}}
+{{#ctx.results[0].aggregations.by_user.buckets}}
+User: {{key}} ({{doc_count}} hits)
+{{#sample_alerts.hits.hits}}
+  - Agent: {{_source.agent.name}} | Time: {{_source.@timestamp}} | Command: {{_source.data.dissect.content}}
+{{/sample_alerts.hits.hits}}
+{{/ctx.results[0].aggregations.by_user.buckets}}
 
 MITRE: T1003 - Credential Access
 ```
 
-**Webhook action template (JSON):**
+**Webhook action template:**
 ```json
 {
   "monitor": "{{ctx.monitor.name}}",
   "trigger": "{{ctx.trigger.name}}",
   "rule_id": "100001",
-  "severity": "12",
-  "time": "{{ctx.periodStart}}",
-  "hits": "{{ctx.results[0].hits.total.value}}"
+  "time": "{{ctx.periodEnd}}",
+  "buckets": "{{ctx.results[0].aggregations.by_user.buckets}}"
 }
 ```
 
-### ⑥ ossec.conf Alert Config (Server-side)
+### ⑥ ossec.conf Alert Config
 
 **Email alerts:**
 ```xml
@@ -120,7 +196,6 @@ MITRE: T1003 - Credential Access
   <email_to>soc@yourcompany.com</email_to>
   <smtp_server>localhost</smtp_server>
 </global>
-
 <email_alerts>
   <email_to>admin@yourcompany.com</email_to>
   <level>12</level>
@@ -128,7 +203,7 @@ MITRE: T1003 - Credential Access
 </email_alerts>
 ```
 
-**Active response (block user):**
+**Active response:**
 ```xml
 <active-response>
   <command>host-deny</command>
@@ -138,7 +213,7 @@ MITRE: T1003 - Credential Access
 </active-response>
 ```
 
-**Integration (Slack example):**
+**Integration (Slack):**
 ```xml
 <integration>
   <name>custom-slack</name>
@@ -150,16 +225,13 @@ MITRE: T1003 - Credential Access
 
 ### ⑦ Test & Validate
 
-**Test rule with wazuh-logtest:**
+**Test rule:**
 ```bash
 echo 'Sep 18 16:00:00 host sudo: user : TTY=pts/0 ; PWD=/home/user ; USER=root ; COMMAND=/usr/bin/cat /etc/shadow' | /var/ossec/bin/wazuh-logtest
 ```
-Expected: Rule `100001` triggers, level 12
 
-**Verify monitor fires:**
-- Navigate: **Alerting → Monitors → Linux Sensitive Auth File Access via Sudo → Alert history**
-- Confirm alerts appear when matching events are indexed
+**Verify monitor:**
+- **Alerting → Monitors → Monitor details → Alert history**
 
-**Dashboard visualization:**
-- **Security Events → Add filter:** `rule.id: 100001`
-- Save as named search for SOC team
+**Dashboard filter:**
+- Security Events → filter: `rule.id: 100001` → Save as search
