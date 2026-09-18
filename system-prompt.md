@@ -125,9 +125,61 @@ Use Extraction query editor. Always include ALL these parameters:
 - Aggregation: `ctx.results[0].aggregations.<agg_name>.buckets.size() > 0`
 - Simple: `ctx.results[0].hits.total.value > 0`
 
-**⑤ Action Configuration**
-- Email template with `{{ctx.monitor.name}}`, `{{ctx.periodEnd}}`, bucket iteration
-- Webhook JSON payload
+**⑤ Action Configuration — Message Body with Field References**
+
+The action message uses Mustache template syntax. Fields from `_source.includes` are available as `{{_source.field.path}}`.
+
+**Three-layer consistency (MUST match):**
+```
+XML Rule <field name="X">  →  _source.includes: ["X"]  →  Action: {{_source.X}}
+```
+
+**Field template variable mapping:**
+| `_source.includes` field | Action Message variable |
+|---|---|
+| `@timestamp` | `{{_source.@timestamp}}` |
+| `agent.name` | `{{_source.agent.name}}` |
+| `rule.id` | `{{_source.rule.id}}` |
+| `rule.level` | `{{_source.rule.level}}` |
+| `data.srcip` | `{{_source.data.srcip}}` |
+| `data.user.name` | `{{_source.data.user.name}}` |
+| `data.process.name` | `{{_source.data.process.name}}` |
+| `data.dissect.content` | `{{_source.data.dissect.content}}` |
+| `data.command` | `{{_source.data.command}}` |
+| `full_log` | `{{_source.full_log}}` |
+
+**Email template (aggregation monitor with top_hits):**
+```
+Subject: [Wazuh Alert] {{ctx.monitor.name}} - Rule <RULE_ID>
+
+Monitor: {{ctx.monitor.name}}
+Trigger: {{ctx.trigger.name}}
+Time: {{ctx.periodEnd}}
+Total hits: {{ctx.results[0].hits.total.value}}
+
+{{#ctx.results[0].aggregations.by_<field>.buckets}}
+=== Group: {{key}} ({{doc_count}} hits) ===
+{{#sample_alerts.hits.hits}}
+- Time: {{_source.@timestamp}}
+  Agent: {{_source.agent.name}}
+  User: {{_source.data.user.name}}
+  Process: {{_source.data.process.name}}
+  Command: {{_source.data.dissect.content}}
+  Source IP: {{_source.data.srcip}}
+{{/sample_alerts.hits.hits}}
+{{/ctx.results[0].aggregations.by_<field>.buckets}}
+```
+
+**Webhook template (JSON):**
+```json
+{
+  "monitor": "{{ctx.monitor.name}}",
+  "trigger": "{{ctx.trigger.name}}",
+  "rule_id": "<RULE_ID>",
+  "time": "{{ctx.periodEnd}}",
+  "total_hits": "{{ctx.results[0].hits.total.value}}"
+}
+```
 
 **⑥ ossec.conf Alert Config**
 - `<email_alerts>`, `<active-response>`, `<integration>` blocks

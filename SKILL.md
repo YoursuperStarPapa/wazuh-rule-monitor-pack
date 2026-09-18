@@ -48,15 +48,88 @@ Target: Wazuh 4.14.5
      - `<field name="X" type="pcre2">pattern` → `{"term":{"X":"value"}}` or `{"regexp":{"X":"pattern"}}`
      - `<field name="X" negate="yes">` → move to `must_not` or exclude from filter
    - The `rule.id` range filter always uses `from: <id>, to: <id>` to scope to this rule
+   - `_source.includes` must list ALL fields that will be referenced in the action message body
 
    **④ Trigger Condition**
    - For aggregation monitors: `ctx.results[0].aggregations.<agg_name>.buckets.size() > 0`
    - For simple monitors: `ctx.results[0].hits.total.value > 0`
 
-   **⑤ Action Configuration**
-   - Email: subject + body template with `{{ctx}}` variables
-   - Webhook: JSON payload template
-   - Include: `{{ctx.monitor.name}}`, `{{ctx.trigger.name}}`, `{{ctx.results[0].aggregations}}`
+   **⑤ Action Configuration — Message Body with Field References**
+   - The action message body uses Mustache/Handlebars template syntax
+   - Fields from `_source.includes` in the extraction query are available as template variables
+   - **The fields displayed in the message body MUST match the fields listed in `_source.includes`**
+
+   **Template variable mapping:**
+   | Extraction Query field (`_source.includes`) | Action Message variable |
+   |---|---|
+   | `@timestamp` | `{{_source.@timestamp}}` |
+   | `agent.name` | `{{_source.agent.name}}` |
+   | `rule.id` | `{{_source.rule.id}}` |
+   | `rule.level` | `{{_source.rule.level}}` |
+   | `rule.description` | `{{_source.rule.description}}` |
+   | `data.srcip` | `{{_source.data.srcip}}` |
+   | `data.dstip` | `{{_source.data.dstip}}` |
+   | `data.user.name` | `{{_source.data.user.name}}` |
+   | `data.process.name` | `{{_source.data.process.name}}` |
+   | `data.dissect.content` | `{{_source.data.dissect.content}}` |
+   | `data.command` | `{{_source.data.command}}` |
+   | `full_log` | `{{_source.full_log}}` |
+
+   **Email action template (aggregation monitor with top_hits):**
+   ```
+   Subject: [Wazuh Alert] {{ctx.monitor.name}} - Rule <RULE_ID>
+
+   Monitor: {{ctx.monitor.name}}
+   Trigger: {{ctx.trigger.name}}
+   Time: {{ctx.periodEnd}}
+   Total hits: {{ctx.results[0].hits.total.value}}
+
+   {{#ctx.results[0].aggregations.by_<field>.buckets}}
+   === Group: {{key}} ({{doc_count}} hits) ===
+   {{#sample_alerts.hits.hits}}
+   - Time: {{_source.@timestamp}}
+     Agent: {{_source.agent.name}}
+     User: {{_source.data.user.name}}
+     Process: {{_source.data.process.name}}
+     Command: {{_source.data.dissect.content}}
+     Source IP: {{_source.data.srcip}}
+   {{/sample_alerts.hits.hits}}
+   {{/ctx.results[0].aggregations.by_<field>.buckets}}
+   ```
+
+   **Webhook action template (JSON):**
+   ```json
+   {
+     "monitor": "{{ctx.monitor.name}}",
+     "trigger": "{{ctx.trigger.name}}",
+     "rule_id": "<RULE_ID>",
+     "time": "{{ctx.periodEnd}}",
+     "total_hits": "{{ctx.results[0].hits.total.value}}",
+     "alerts": [
+       "{{#ctx.results[0].aggregations.by_<field>.buckets}}",
+       "{{#sample_alerts.hits.hits}}",
+       {
+         "timestamp": "{{_source.@timestamp}}",
+         "agent": "{{_source.agent.name}}",
+         "user": "{{_source.data.user.name}}",
+         "srcip": "{{_source.data.srcip}}",
+         "command": "{{_source.data.dissect.content}}"
+       },
+       "{{/sample_alerts.hits.hits}}",
+       "{{/ctx.results[0].aggregations.by_<field>.buckets}}"
+     ]
+   }
+   ```
+
+   **Field reference flow:**
+   ```
+   XML Rule <field name="X">
+        ↓
+   Extraction Query _source.includes: ["X", ...]
+        ↓
+   Action Message: {{_source.X}}
+   ```
+   All three must be consistent. The extraction query fetches the fields, and the action message displays them.
 
    **⑥ ossec.conf Alert Config**
    - Email alerts: `<email_alerts>` + `<global>` config
@@ -84,7 +157,7 @@ Target: Wazuh 4.14.5
 ```
 
 ### Section 2: Monitor & Alert Config
-Must include ALL subsections ①–⑦. The extraction query (③) must be a complete, copy-pasteable JSON block with all parameters: `size`, `query.bool.filter` (timestamp range + rule.id range + field filters), `track_total_hits`, and `aggregations` with `top_hits`.
+Must include ALL subsections ①–⑦. The extraction query (③) and action message (⑤) must reference the SAME fields consistently.
 
 ## Extraction Query Template
 
@@ -156,8 +229,6 @@ Must include ALL subsections ①–⑦. The extraction query (③) must be a com
 
 ## `_source.includes` Field Selection
 
-Always include baseline fields, then add rule-specific fields.
-
 **Baseline fields (always include):**
 ```
 @timestamp, agent.name, rule.id, rule.level, rule.description, rule.groups
@@ -217,4 +288,5 @@ full_log                      — raw original log
 - Default to local_rules.xml conventions (rule ID 100000+)
 - Extraction query uses `{{period_end}}` template variable for time window
 - Aggregation field should match the logical grouping (e.g., source IP, user, agent)
+- The three layers must be consistent: XML rule fields → `_source.includes` → action message `{{_source.X}}`
 - Ask for clarification if logic is vague

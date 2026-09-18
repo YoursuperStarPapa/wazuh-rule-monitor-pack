@@ -25,7 +25,6 @@
 ### ① Verify Rule Loaded
 - Navigate: **Wazuh Dashboard → Management → Rules**
 - Search: `100001` or `Sensitive Authentication`
-- Confirm rule is present and enabled
 
 ### ② Create Monitor
 - Navigate: **Wazuh Dashboard → OpenSearch Plugins → Alerting → Monitors → Create monitor**
@@ -33,9 +32,7 @@
 - **Index:** `wazuh-alerts-*`
 - **Schedule:** Every 1 minute
 
-### ③ Extraction Query (Query DSL Editor)
-
-Select **Extraction query editor** and paste:
+### ③ Extraction Query
 
 ```json
 {
@@ -116,6 +113,7 @@ Select **Extraction query editor** and paste:
                 "data.user.name",
                 "data.process.name",
                 "data.dissect.content",
+                "data.srcip",
                 "rule.id",
                 "rule.level",
                 "rule.description"
@@ -137,39 +135,39 @@ Select **Extraction query editor** and paste:
 }
 ```
 
-**Parameter breakdown:**
-| Parameter | Value | Purpose |
-|---|---|---|
-| `size` | 1000 | Max raw hits returned |
-| `filter[0].range.@timestamp` | `{{period_end}}||-1m` to `{{period_end}}` | 1-minute lookback window |
-| `filter[1].range.rule.id` | `from: 100001, to: 100001` | Scope to this rule only |
-| `filter[2].term.process.name` | `sudo` | Match process field |
-| `filter[3].regexp.dissect.content` | `COMMAND=.*shadow...` | OR match via regex |
-| `track_total_hits` | 2147483647 | Accurate total count |
-| `aggregations.by_user` | `data.user.name` | Group alerts by user |
-| `top_hits._source.includes` | 8 fields | Return only relevant fields |
-| `top_hits.sort` | `@timestamp desc` | Latest alerts first |
-
 ### ④ Trigger Condition
-- **Condition type:** Per bucket (aggregation monitor)
-- **Threshold expression:**
 ```
 ctx.results[0].aggregations.by_user.buckets.size() > 0
 ```
 
-### ⑤ Action Configuration
+### ⑤ Action Configuration — Field References
+
+**The three-layer consistency:**
+
+| Layer | Field reference |
+|---|---|
+| XML Rule | `<field name="process.name">`, `<field name="dissect.content">` |
+| Extraction Query `_source.includes` | `data.process.name`, `data.dissect.content` |
+| Action Message | `{{_source.data.process.name}}`, `{{_source.data.dissect.content}}` |
 
 **Email action template:**
 ```
-Subject: [Wazuh] Sensitive Auth File Access via Sudo - Rule 100001
+Subject: [Wazuh Alert] Sensitive Auth File Access via Sudo - Rule 100001
 
-Body:
-Monitor {{ctx.monitor.name}} triggered at {{ctx.periodEnd}}.
+Monitor: {{ctx.monitor.name}}
+Trigger: {{ctx.trigger.name}}
+Time: {{ctx.periodEnd}}
+Total hits: {{ctx.results[0].hits.total.value}}
 
 {{#ctx.results[0].aggregations.by_user.buckets}}
-User: {{key}} ({{doc_count}} hits)
+=== User: {{key}} ({{doc_count}} hits) ===
 {{#sample_alerts.hits.hits}}
-  - Agent: {{_source.agent.name}} | Time: {{_source.@timestamp}} | Command: {{_source.data.dissect.content}}
+- Time: {{_source.@timestamp}}
+  Agent: {{_source.agent.name}}
+  User: {{_source.data.user.name}}
+  Process: {{_source.data.process.name}}
+  Command: {{_source.data.dissect.content}}
+  Source IP: {{_source.data.srcip}}
 {{/sample_alerts.hits.hits}}
 {{/ctx.results[0].aggregations.by_user.buckets}}
 
@@ -183,7 +181,21 @@ MITRE: T1003 - Credential Access
   "trigger": "{{ctx.trigger.name}}",
   "rule_id": "100001",
   "time": "{{ctx.periodEnd}}",
-  "buckets": "{{ctx.results[0].aggregations.by_user.buckets}}"
+  "total_hits": "{{ctx.results[0].hits.total.value}}",
+  "alerts": [
+    "{{#ctx.results[0].aggregations.by_user.buckets}}",
+    "{{#sample_alerts.hits.hits}}",
+    {
+      "timestamp": "{{_source.@timestamp}}",
+      "agent": "{{_source.agent.name}}",
+      "user": "{{_source.data.user.name}}",
+      "process": "{{_source.data.process.name}}",
+      "command": "{{_source.data.dissect.content}}",
+      "srcip": "{{_source.data.srcip}}"
+    },
+    "{{/sample_alerts.hits.hits}}",
+    "{{/ctx.results[0].aggregations.by_user.buckets}}"
+  ]
 }
 ```
 
