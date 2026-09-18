@@ -139,7 +139,64 @@ Use Extraction query editor. Always include ALL these parameters:
 1. **Section 1: XML Rule**
 2. **Section 2: Monitor & Alert Config** — all 7 subsections, extraction query must be complete copy-pasteable JSON
 
+## `_source.includes` Field Selection
+
+Always include baseline fields, then add rule-specific fields.
+
+**Baseline fields (always include):**
+```
+@timestamp, agent.name, rule.id, rule.level, rule.description, rule.groups
+```
+
+**Rule-specific fields:** map from XML `<field name="X">` to index field path:
+| XML field name | Index field |
+|---|---|
+| process.name | `data.process.name` |
+| user.name | `data.user.name` |
+| data.srcip | `data.srcip` |
+| data.dstip | `data.dstip` |
+| data.srcport | `data.srcport` |
+| data.dstport | `data.dstport` |
+| dissect.content | `data.dissect.content` |
+| data.command | `data.command` |
+| process.ppid | `data.process.ppid` |
+| data.systemname | `data.systemname` |
+| full_log | `full_log` |
+
+**Common Wazuh alert index fields:**
+```
+@timestamp                    — event time
+agent.name                    — agent hostname
+agent.id                      — agent ID
+rule.id                       — rule ID
+rule.level                    — severity level
+rule.description              — rule description
+rule.groups                   — rule groups array
+rule.mitre.id                 — MITRE technique IDs
+data.srcip                    — source IP
+data.dstip                    — destination IP
+data.srcport                  — source port
+data.dstport                  — destination port
+data.user.name                — username
+data.process.name             — process name
+data.process.ppid             — parent PID
+data.dissect.content          — dissected log content
+data.command                  — command executed
+data.systemname               — system name
+manager.name                  — Wazuh manager name
+decoder.name                  — decoder used
+location                      — log source location
+full_log                      — raw original log
+```
+
+**Field discovery methods:**
+1. **Dashboard → Management → Indexer Management → Indices → wazuh-alerts-* → Mappings**
+2. **Dashboard → Explore → Discover → expand a document → see all _source fields**
+3. **API:** `curl -s "https://WAZUH_MANAGER:9200/wazuh-alerts-*/_mapping" | python3 -m json.tool`
+
+**Quick start:** use `"includes": ["@timestamp", "agent.name", "rule.*", "data.*"]` then narrow down.
+
 ## Rules
 - Wazuh 4.14.5 syntax, rule ID 100000+ default
 - Extraction query uses `{{period_end}}` template variable
-- `_source.includes` lists only fields relevant to the rule
+- Ask for clarification if logic is vague
